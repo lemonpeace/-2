@@ -6,6 +6,7 @@ import InlineCalendar from './components/InlineCalendar';
 import ImageViewer from './components/ImageViewer';
 import { NotesTab } from './components/notes/NotesTab';
 import { TodoTab } from './components/todo/TodoTab';
+import { SettingsTab } from './components/settings/SettingsTab';
 import {
   DiaryEntry,
   getWeekNumber,
@@ -15,6 +16,12 @@ import {
   TodoItem,
 } from './types';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
+import {
+  ReminderConfig,
+  getReminderConfig,
+  saveReminderConfig,
+  triggerDiaryNotification,
+} from './services/reminderService';
 
 // Default categories for Notes (메모)
 const DEFAULT_CATEGORIES: NoteCategory[] = [
@@ -85,7 +92,7 @@ const getInitialEntries = (): DiaryEntry[] => {
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('diary');
-  
+
   // Diary State
   const [entries, setEntries] = useState<DiaryEntry[]>(() => {
     if (typeof window !== 'undefined') {
@@ -146,7 +153,8 @@ const App: React.FC = () => {
   // Note categories
   const [categories, setCategories] = useState<NoteCategory[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('note_categories') || localStorage.getItem('scratch_categories');
+      const saved =
+        localStorage.getItem('note_categories') || localStorage.getItem('scratch_categories');
       if (saved) {
         try {
           return JSON.parse(saved);
@@ -172,6 +180,50 @@ const App: React.FC = () => {
     }
     return DEFAULT_TODOS;
   });
+
+  // Daily Reminder Alarm config
+  const [reminderConfig, setReminderConfig] = useState<ReminderConfig>(() => getReminderConfig());
+
+  const handleUpdateReminderConfig = (config: ReminderConfig) => {
+    setReminderConfig(config);
+    saveReminderConfig(config);
+  };
+
+  // Daily Reminder Scheduler: checks time and triggers notification once per day
+  useEffect(() => {
+    if (!reminderConfig.enabled) return;
+
+    const checkAlarm = () => {
+      const now = new Date();
+      const [targetH, targetM] = reminderConfig.time.split(':').map((n) => parseInt(n, 10));
+      const currentH = now.getHours();
+      const currentM = now.getMinutes();
+
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+        now.getDate()
+      ).padStart(2, '0')}`;
+
+      if (
+        currentH === targetH &&
+        currentM === targetM &&
+        reminderConfig.lastNotifiedDate !== todayStr
+      ) {
+        triggerDiaryNotification(
+          "SunJu's story 🌙",
+          '오늘 하루는 어떠셨나요? 소중한 순간을 일기로 기록해보세요.',
+          reminderConfig.soundEnabled
+        );
+
+        const updated = { ...reminderConfig, lastNotifiedDate: todayStr };
+        setReminderConfig(updated);
+        saveReminderConfig(updated);
+      }
+    };
+
+    checkAlarm();
+    const interval = setInterval(checkAlarm, 25000);
+    return () => clearInterval(interval);
+  }, [reminderConfig]);
 
   // Save diary entries to localStorage
   useEffect(() => {
@@ -209,28 +261,74 @@ const App: React.FC = () => {
     }
   }, [todos]);
 
-  // Sync entries from Supabase if configured
-  const fetchEntries = async () => {
+  // Sync entries, notes, todos from Supabase if configured
+  const fetchAllCloudData = async () => {
     if (!supabase) return;
 
     try {
-      const { data, error } = await supabase
+      // 1. Fetch entries
+      const { data: entryData, error: entryErr } = await supabase
         .from('entries')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('Error fetching entries from Supabase:', error);
-      } else if (data && data.length > 0) {
-        const mappedData: DiaryEntry[] = data.map((item: any) => ({
+      if (!entryErr && entryData && entryData.length > 0) {
+        const mappedData: DiaryEntry[] = entryData.map((item: any) => ({
           id: String(item.id),
           content: item.content,
           date: item.date,
           week: item.week,
-          images: item.images,
+          images: item.images || [],
           createdAt: new Date(item.created_at).getTime(),
         }));
         setEntries(mappedData);
+
+        // Auto-focus calendar view to the most recent entry's month and date
+        if (mappedData[0]) {
+          const parts = mappedData[0].date.split('.').map((p) => parseInt(p.trim(), 10));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            setViewYear(parts[0]);
+            setViewMonth(parts[1] - 1);
+            setSelectedDate(mappedData[0].date);
+          }
+        }
+      }
+
+      // 2. Fetch notes
+      const { data: noteData, error: noteErr } = await supabase
+        .from('notes')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!noteErr && noteData && noteData.length > 0) {
+        const mappedNotes: MemoNote[] = noteData.map((item: any) => ({
+          id: String(item.id),
+          content: item.content,
+          category: item.category || '일반',
+          isPinned: !!item.is_pinned,
+          createdAt: new Date(item.created_at).getTime(),
+          updatedAt: item.updated_at
+            ? new Date(item.updated_at).getTime()
+            : new Date(item.created_at).getTime(),
+        }));
+        setNotes(mappedNotes);
+      }
+
+      // 3. Fetch todos
+      const { data: todoData, error: todoErr } = await supabase
+        .from('todos')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!todoErr && todoData && todoData.length > 0) {
+        const mappedTodos: TodoItem[] = todoData.map((item: any) => ({
+          id: String(item.id),
+          text: item.text,
+          completed: !!item.completed,
+          createdAt: new Date(item.created_at).getTime(),
+          completedAt: item.completed_at ? new Date(item.completed_at).getTime() : undefined,
+        }));
+        setTodos(mappedTodos);
       }
     } catch (err) {
       console.error('Unexpected error loading from Supabase:', err);
@@ -239,7 +337,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (isSupabaseConfigured) {
-      fetchEntries();
+      fetchAllCloudData();
     }
   }, []);
 
@@ -274,13 +372,15 @@ const App: React.FC = () => {
 
   // Synchronized Month Entries: Only entries belonging to viewYear and viewMonth
   const monthEntries = useMemo(() => {
-    return entries.filter((entry) => {
-      const parts = entry.date.split('.').map((p) => parseInt(p.trim(), 10));
-      if (parts.length >= 2) {
-        return parts[0] === viewYear && parts[1] === viewMonth + 1;
-      }
-      return false;
-    }).sort((a, b) => b.createdAt - a.createdAt);
+    return entries
+      .filter((entry) => {
+        const parts = entry.date.split('.').map((p) => parseInt(p.trim(), 10));
+        if (parts.length >= 2) {
+          return parts[0] === viewYear && parts[1] === viewMonth + 1;
+        }
+        return false;
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
   }, [entries, viewYear, viewMonth]);
 
   // Filtered entries displayed in the list:
@@ -295,7 +395,7 @@ const App: React.FC = () => {
   // Add Diary Entry
   const handleAddEntry = async (content: string, images?: string[], dateStr?: string) => {
     const entryDate = dateStr || selectedDate || formatDate(new Date());
-    
+
     // Parse week number from entryDate
     const dateParts = entryDate.split('.').map((p) => parseInt(p.trim(), 10));
     const targetDateObj =
@@ -322,32 +422,16 @@ const App: React.FC = () => {
     if (supabase) {
       try {
         const newEntryPayload = {
+          id: localEntry.id,
           content,
           date: entryDate,
           week: weekNum,
           images: images || [],
           created_at: new Date().toISOString(),
         };
-        const { data, error } = await supabase
-          .from('entries')
-          .insert([newEntryPayload])
-          .select();
-
+        const { error } = await supabase.from('entries').insert([newEntryPayload]);
         if (error) {
           console.error('Error adding entry to Supabase:', error);
-        } else if (data && data.length > 0) {
-          const savedEntry = data[0];
-          setEntries((prev) =>
-            prev.map((e) =>
-              e.id === localEntry.id
-                ? {
-                    ...e,
-                    id: String(savedEntry.id),
-                    createdAt: new Date(savedEntry.created_at).getTime(),
-                  }
-                : e
-            )
-          );
         }
       } catch (err) {
         console.error('Failed to sync to Supabase:', err);
@@ -376,9 +460,7 @@ const App: React.FC = () => {
   // Update Diary Entry
   const handleUpdateEntry = async (id: string, newContent: string) => {
     setEntries((prev) =>
-      prev.map((entry) =>
-        entry.id === id ? { ...entry, content: newContent } : entry
-      )
+      prev.map((entry) => (entry.id === id ? { ...entry, content: newContent } : entry))
     );
 
     if (supabase) {
@@ -397,7 +479,7 @@ const App: React.FC = () => {
   };
 
   // Notes (메모) Handlers
-  const handleAddMemo = (payload: {
+  const handleAddMemo = async (payload: {
     content: string;
     category: string;
     isPinned?: boolean;
@@ -411,9 +493,26 @@ const App: React.FC = () => {
       updatedAt: Date.now(),
     };
     setNotes((prev) => [newMemo, ...prev]);
+
+    if (supabase) {
+      try {
+        await supabase.from('notes').insert([
+          {
+            id: newMemo.id,
+            content: newMemo.content,
+            category: newMemo.category,
+            is_pinned: newMemo.isPinned,
+            created_at: new Date(newMemo.createdAt).toISOString(),
+            updated_at: new Date(newMemo.updatedAt).toISOString(),
+          },
+        ]);
+      } catch (e) {
+        console.error('Error syncing note to Supabase', e);
+      }
+    }
   };
 
-  const handleUpdateMemo = (id: string, newContent: string, newCategory?: string) => {
+  const handleUpdateMemo = async (id: string, newContent: string, newCategory?: string) => {
     setNotes((prev) =>
       prev.map((m) =>
         m.id === id
@@ -426,18 +525,49 @@ const App: React.FC = () => {
           : m
       )
     );
-  };
 
-  const handleDeleteMemo = (id: string) => {
-    if (window.confirm('이 메모를 삭제하시겠습니까?')) {
-      setNotes((prev) => prev.filter((m) => m.id !== id));
+    if (supabase) {
+      try {
+        await supabase
+          .from('notes')
+          .update({
+            content: newContent,
+            category: newCategory,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id);
+      } catch (e) {
+        console.error('Error updating note on Supabase', e);
+      }
     }
   };
 
-  const handleTogglePinMemo = (id: string) => {
-    setNotes((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, isPinned: !m.isPinned } : m))
-    );
+  const handleDeleteMemo = async (id: string) => {
+    if (window.confirm('이 메모를 삭제하시겠습니까?')) {
+      setNotes((prev) => prev.filter((m) => m.id !== id));
+      if (supabase) {
+        try {
+          await supabase.from('notes').delete().eq('id', id);
+        } catch (e) {
+          console.error('Error deleting note from Supabase', e);
+        }
+      }
+    }
+  };
+
+  const handleTogglePinMemo = async (id: string) => {
+    const target = notes.find((m) => m.id === id);
+    const nextPin = target ? !target.isPinned : false;
+
+    setNotes((prev) => prev.map((m) => (m.id === id ? { ...m, isPinned: nextPin } : m)));
+
+    if (supabase) {
+      try {
+        await supabase.from('notes').update({ is_pinned: nextPin }).eq('id', id);
+      } catch (e) {
+        console.error('Error toggling pin on Supabase', e);
+      }
+    }
   };
 
   const handleAddCategory = (name: string, color: string) => {
@@ -464,15 +594,13 @@ const App: React.FC = () => {
     ) {
       setCategories((prev) => prev.filter((c) => c.id !== id));
       setNotes((prev) =>
-        prev.map((n) =>
-          n.category === categoryToDelete.name ? { ...n, category: '일반' } : n
-        )
+        prev.map((n) => (n.category === categoryToDelete.name ? { ...n, category: '일반' } : n))
       );
     }
   };
 
   // Todo Handlers (No category needed, checked items move to completed list)
-  const handleAddTodo = (text: string) => {
+  const handleAddTodo = async (text: string) => {
     const newTodo: TodoItem = {
       id: `todo_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       text,
@@ -480,47 +608,162 @@ const App: React.FC = () => {
       createdAt: Date.now(),
     };
     setTodos((prev) => [newTodo, ...prev]);
+
+    if (supabase) {
+      try {
+        await supabase.from('todos').insert([
+          {
+            id: newTodo.id,
+            text: newTodo.text,
+            completed: false,
+            created_at: new Date(newTodo.createdAt || Date.now()).toISOString(),
+          },
+        ]);
+      } catch (e) {
+        console.error('Error inserting todo to Supabase', e);
+      }
+    }
   };
 
-  const handleToggleTodo = (id: string) => {
+  const handleToggleTodo = async (id: string) => {
+    const target = todos.find((t) => t.id === id);
+    const nextCompleted = target ? !target.completed : false;
+    const completedAt = nextCompleted ? Date.now() : undefined;
+
     setTodos((prev) =>
       prev.map((t) => {
         if (t.id === id) {
-          const nextCompleted = !t.completed;
           return {
             ...t,
             completed: nextCompleted,
-            completedAt: nextCompleted ? Date.now() : undefined,
+            completedAt,
           };
         }
         return t;
       })
     );
+
+    if (supabase) {
+      try {
+        await supabase
+          .from('todos')
+          .update({
+            completed: nextCompleted,
+            completed_at: completedAt ? new Date(completedAt).toISOString() : null,
+          })
+          .eq('id', id);
+      } catch (e) {
+        console.error('Error toggling todo on Supabase', e);
+      }
+    }
   };
 
-  const handleDeleteTodo = (id: string) => {
+  const handleDeleteTodo = async (id: string) => {
     setTodos((prev) => prev.filter((t) => t.id !== id));
+    if (supabase) {
+      try {
+        await supabase.from('todos').delete().eq('id', id);
+      } catch (e) {
+        console.error('Error deleting todo on Supabase', e);
+      }
+    }
   };
 
-  const handleUpdateTodoText = (id: string, text: string) => {
-    setTodos((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, text } : t))
-    );
+  const handleUpdateTodoText = async (id: string, text: string) => {
+    setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, text } : t)));
+    if (supabase) {
+      try {
+        await supabase.from('todos').update({ text }).eq('id', id);
+      } catch (e) {
+        console.error('Error updating todo on Supabase', e);
+      }
+    }
   };
 
-  const handleClearCompletedTodos = () => {
+  const handleClearCompletedTodos = async () => {
     if (window.confirm('완료된 투두 리스트를 모두 삭제하시겠습니까?')) {
       setTodos((prev) => prev.filter((t) => !t.completed));
+      if (supabase) {
+        try {
+          await supabase.from('todos').delete().eq('completed', true);
+        } catch (e) {
+          console.error('Error clearing completed todos on Supabase', e);
+        }
+      }
+    }
+  };
+
+  // Sync all current data to Supabase
+  const handleSyncAllToCloud = async (): Promise<{ success: boolean; message: string }> => {
+    if (!supabase) {
+      return { success: false, message: 'Supabase가 아직 연결되지 않았습니다.' };
+    }
+
+    try {
+      let eCount = 0;
+      let nCount = 0;
+      let tCount = 0;
+
+      // 1. Sync entries
+      if (entries.length > 0) {
+        const entryRows = entries.map((e) => ({
+          id: e.id,
+          content: e.content,
+          date: e.date,
+          week: e.week,
+          images: e.images || [],
+          created_at: new Date(e.createdAt).toISOString(),
+        }));
+        const { error: eErr } = await supabase.from('entries').upsert(entryRows);
+        if (eErr) throw eErr;
+        eCount = entryRows.length;
+      }
+
+      // 2. Sync notes
+      if (notes.length > 0) {
+        const noteRows = notes.map((n) => ({
+          id: n.id,
+          content: n.content,
+          category: n.category,
+          is_pinned: n.isPinned,
+          created_at: new Date(n.createdAt).toISOString(),
+          updated_at: new Date(n.updatedAt).toISOString(),
+        }));
+        const { error: nErr } = await supabase.from('notes').upsert(noteRows);
+        if (nErr) throw nErr;
+        nCount = noteRows.length;
+      }
+
+      // 3. Sync todos
+      if (todos.length > 0) {
+        const todoRows = todos.map((t) => ({
+          id: t.id,
+          text: t.text,
+          completed: t.completed,
+          created_at: new Date(t.createdAt || Date.now()).toISOString(),
+          completed_at: t.completedAt ? new Date(t.completedAt).toISOString() : null,
+        }));
+        const { error: tErr } = await supabase.from('todos').upsert(todoRows);
+        if (tErr) throw tErr;
+        tCount = todoRows.length;
+      }
+
+      return {
+        success: true,
+        message: `동기화 완료! 일기 ${eCount}개, 메모 ${nCount}개, 투두 ${tCount}개가 클라우드에 안전하게 저장되었습니다.`,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        message: `동기화 실패: ${err?.message || '테이블 생성 여부나 RLS 정책을 확인해주세요.'}`,
+      };
     }
   };
 
   return (
     <div className="min-h-screen bg-white max-w-md mx-auto shadow-2xl relative border-x border-gray-50 flex flex-col font-sans">
       {/* App Header with centered title and without left/right icons or dots */}
-      <Header
-        activeTab={activeTab}
-        onSelectTab={(tab) => setActiveTab(tab)}
-      />
+      <Header activeTab={activeTab} onSelectTab={(tab) => setActiveTab(tab)} />
 
       {/* Main Content Area based on Active Tab */}
       <div className="flex-1">
@@ -538,10 +781,7 @@ const App: React.FC = () => {
 
             <main className="pt-3 pb-24">
               {/* Diary Input Box matched to selected date */}
-              <DiaryInput
-                selectedDate={selectedDate}
-                onAddEntry={handleAddEntry}
-              />
+              <DiaryInput selectedDate={selectedDate} onAddEntry={handleAddEntry} />
 
               {/* Matched Entries List Header synced with Calendar */}
               <div className="px-5 mb-2.5 flex items-center justify-between text-xs text-gray-500">
@@ -620,6 +860,26 @@ const App: React.FC = () => {
                         <p className="text-xs text-gray-400 mt-1">
                           달력에서 날짜를 선택하거나 상단에서 일기를 기록해보세요.
                         </p>
+                        {entries.length > 0 && (
+                          <div className="mt-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const latest = entries[0];
+                                const parts = latest.date.split('.').map((p) => parseInt(p.trim(), 10));
+                                if (parts.length >= 2) {
+                                  setViewYear(parts[0]);
+                                  setViewMonth(parts[1] - 1);
+                                  setSelectedDate(latest.date);
+                                  setSelectedDayFilter(null);
+                                }
+                              }}
+                              className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5"
+                            >
+                              <span>최근 작성된 일기({entries[0].date}) 보러가기</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -639,7 +899,7 @@ const App: React.FC = () => {
             onAddCategory={handleAddCategory}
             onDeleteCategory={handleDeleteCategory}
           />
-        ) : (
+        ) : activeTab === 'todo' ? (
           /* Standalone Todo Tab (카테고리 없음, 체크 시 완료 목록으로 분리) */
           <TodoTab
             todos={todos}
@@ -649,15 +909,22 @@ const App: React.FC = () => {
             onUpdateTodoText={handleUpdateTodoText}
             onClearCompleted={handleClearCompletedTodos}
           />
+        ) : (
+          /* Settings Tab: Supabase Connection, Daily Reminder Alarm, Backups */
+          <SettingsTab
+            reminderConfig={reminderConfig}
+            onUpdateReminderConfig={handleUpdateReminderConfig}
+            onSyncAllToCloud={handleSyncAllToCloud}
+            entriesCount={entries.length}
+            memosCount={notes.length}
+            todosCount={todos.length}
+          />
         )}
       </div>
 
       {/* Image Viewer Lightbox */}
       {viewingImages && (
-        <ImageViewer
-          images={viewingImages}
-          onClose={() => setViewingImages(null)}
-        />
+        <ImageViewer images={viewingImages} onClose={() => setViewingImages(null)} />
       )}
     </div>
   );

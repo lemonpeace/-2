@@ -1,7 +1,7 @@
 import React from 'react';
-import { BookOpen, FileText, CheckSquare } from 'lucide-react';
+import { BookOpen, FileText, CheckSquare, Settings } from 'lucide-react';
 
-export type AppTab = 'diary' | 'notes' | 'todo';
+export type AppTab = 'diary' | 'notes' | 'todo' | 'settings';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -18,12 +18,12 @@ const Header: React.FC<HeaderProps> = ({ activeTab, onSelectTab }) => {
         </h1>
       </div>
 
-      {/* Tabs Switcher: 일기 | 노트 | 투두 */}
+      {/* Tabs Switcher: 일기 | 노트 | 투두 | 설정 */}
       <div className="px-5 pb-3">
         <div className="bg-gray-100/90 p-1 rounded-full flex gap-1 shadow-inner">
           <button
             onClick={() => onSelectTab('diary')}
-            className={`flex-1 py-1.5 rounded-full text-xs font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 ${
+            className={`flex-1 py-1.5 rounded-full text-xs font-semibold flex items-center justify-center gap-1 transition-all duration-200 ${
               activeTab === 'diary'
                 ? 'bg-white text-black shadow-sm font-bold scale-[1.01]'
                 : 'text-gray-500 hover:text-gray-900'
@@ -34,7 +34,7 @@ const Header: React.FC<HeaderProps> = ({ activeTab, onSelectTab }) => {
           </button>
           <button
             onClick={() => onSelectTab('notes')}
-            className={`flex-1 py-1.5 rounded-full text-xs font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 ${
+            className={`flex-1 py-1.5 rounded-full text-xs font-semibold flex items-center justify-center gap-1 transition-all duration-200 ${
               activeTab === 'notes'
                 ? 'bg-white text-black shadow-sm font-bold scale-[1.01]'
                 : 'text-gray-500 hover:text-gray-900'
@@ -45,7 +45,7 @@ const Header: React.FC<HeaderProps> = ({ activeTab, onSelectTab }) => {
           </button>
           <button
             onClick={() => onSelectTab('todo')}
-            className={`flex-1 py-1.5 rounded-full text-xs font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 ${
+            className={`flex-1 py-1.5 rounded-full text-xs font-semibold flex items-center justify-center gap-1 transition-all duration-200 ${
               activeTab === 'todo'
                 ? 'bg-white text-black shadow-sm font-bold scale-[1.01]'
                 : 'text-gray-500 hover:text-gray-900'
@@ -53,6 +53,17 @@ const Header: React.FC<HeaderProps> = ({ activeTab, onSelectTab }) => {
           >
             <CheckSquare size={13} />
             <span>투두</span>
+          </button>
+          <button
+            onClick={() => onSelectTab('settings')}
+            className={`flex-1 py-1.5 rounded-full text-xs font-semibold flex items-center justify-center gap-1 transition-all duration-200 ${
+              activeTab === 'settings'
+                ? 'bg-white text-black shadow-sm font-bold scale-[1.01]'
+                : 'text-gray-500 hover:text-gray-900'
+            }`}
+          >
+            <Settings size={13} />
+            <span>설정</span>
           </button>
         </div>
       </div>
